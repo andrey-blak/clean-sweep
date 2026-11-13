@@ -1,0 +1,6 @@
+[Unit]
+Description=Remove scratch directories
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/clean-sweep

@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+
+# clean-sweep — remove scratch dirs (e.g. .claude, .hermes, .cc-writes, ...)
+# Config: ~/.config/clean-sweep/config.ini (override: -c FILE or CLEAN_SWEEP_CONFIG)
+# Usage:  clean-sweep [-n|--dry-run] [-c|--config FILE]
+
+set -euo pipefail
+
+CONFIG="${CLEAN_SWEEP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/clean-sweep/config.ini}"
+CLI_DRY=0
+while (( $# )); do
+  case "$1" in
+    -n|--dry-run) CLI_DRY=1 ;;
+    -c|--config)  CONFIG="${2:?--config needs a path}"; shift ;;
+    -h|--help)    echo "Usage: clean-sweep [-n|--dry-run] [-c|--config FILE]"; exit 0 ;;
+    *) echo "clean-sweep: unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+[[ -f "$CONFIG" ]] || { echo "clean-sweep: no config at $CONFIG" >&2; exit 1; }
+
+# ---------- helpers ----------
+trim() { local s=$1; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
+unquote() {
+  local s=$1
+  if (( ${#s} >= 2 )) && [[ ${s:0:1} == '"' && ${s: -1} == '"' ]]; then s="${s:1:${#s}-2}"; fi
+  printf '%s' "$s"
+}
+# Expand ${VAR:-default}, ${VAR}, $VAR via regex substitution — no eval.
+expand() {
+  local s=$1 tok var def val
+  while [[ "$s" =~ \$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\} ]]; do
+    tok=${BASH_REMATCH[0]}; var=${BASH_REMATCH[1]}; def=${BASH_REMATCH[3]-}
+    val=${!var-}; [[ -n "$val" ]] || val=$def
+    s=${s//"$tok"/"$val"}
+  done
+  while [[ "$s" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
+    tok=${BASH_REMATCH[0]}; var=${BASH_REMATCH[1]}
+    s=${s//"$tok"/"${!var-}"}
+  done
+  printf '%s' "$s"
+}
+# Quote-aware comma split -> global SPLIT[]
+split_csv() {
+  local s=$1 cur="" inq=0 i c e
+  local parts=()
+  for ((i=0; i<${#s}; i++)); do
+    c=${s:i:1}
+    if [[ $c == '"' ]]; then inq=$((1-inq)); cur+=$c
+    elif [[ $c == ',' && $inq -eq 0 ]]; then parts+=("$cur"); cur=""
+    else cur+=$c; fi
+  done
+  parts+=("$cur")
+  SPLIT=()
+  for e in "${parts[@]}"; do
+    e=$(unquote "$(trim "$e")")
+    if [[ -n "$e" ]]; then SPLIT+=("$e"); fi
+  done
+  return 0
+}
+
+# ---------- parse INI (full-line # / ; comments only) ----------
+ROOTS_RAW=""; SKIP_RAW=""; MIN_AGE_HOURS=24; DRY_RUN=false
+declare -A T_MODE T_AGE
+section=""
+while IFS= read -r line || [[ -n "$line" ]]; do
+  line=$(trim "$line")
+  if [[ -z "$line" || $line == '#'* || $line == ';'* ]]; then continue; fi
+  if [[ $line == '['*']' ]]; then section=${line:1:${#line}-2}; continue; fi
+  if [[ $line != *=* ]]; then continue; fi
+  key=$(unquote "$(trim "${line%%=*}")")
+  val=$(trim "${line#*=}")
+  case $section in
+    scan)
+      case $key in
+        roots)         ROOTS_RAW=$val ;;
+        skip)          SKIP_RAW=$val ;;
+        min_age_hours) MIN_AGE_HOURS=$val ;;
+        dry_run)       DRY_RUN=$val ;;
+      esac ;;
+    targets)
+      val=$(unquote "$val")
+      mode=$(trim "${val%%,*}")
+      if [[ $val == *,* ]]; then age=$(trim "${val#*,}"); else age=""; fi
+      if [[ $mode != empty && $mode != force ]]; then
+        echo "clean-sweep: bad mode for '$key': $mode" >&2; exit 1
+      fi
+      T_MODE["$key"]=$mode
+      if [[ -n "$age" ]]; then T_AGE["$key"]=$age; fi ;;
+  esac
+done < "$CONFIG"
+
+if (( CLI_DRY )); then DRY_RUN=true; fi
+if [[ -z "$ROOTS_RAW" || ${#T_MODE[@]} -eq 0 ]]; then
+  echo "clean-sweep: config needs [scan] roots and [targets]" >&2; exit 1
+fi
+if [[ ! $MIN_AGE_HOURS =~ ^[0-9]+$ ]]; then
+  echo "clean-sweep: min_age_hours must be a whole number" >&2; exit 1
+fi
+if [[ $DRY_RUN != true && $DRY_RUN != false ]]; then
+  echo "clean-sweep: dry_run must be true or false" >&2; exit 1
+fi
+for k in "${!T_AGE[@]}"; do
+  if [[ ! ${T_AGE[$k]} =~ ^[0-9]+$ ]]; then
+    echo "clean-sweep: bad age_hours for '$k': ${T_AGE[$k]}" >&2; exit 1
+  fi
+done
+
+# ---------- expand tokens, build lookup tables ----------
+split_csv "$ROOTS_RAW"; ROOTS=("${SPLIT[@]}")
+split_csv "$SKIP_RAW";  SKIP=("${SPLIT[@]}")
+for i in "${!ROOTS[@]}"; do ROOTS[i]=$(expand "${ROOTS[i]}"); done
+
+declare -A MODE AGE
+for k in "${!T_MODE[@]}"; do
+  xk=$(expand "$k")
+  MODE["$xk"]=${T_MODE[$k]}
+  if [[ -n ${T_AGE[$k]+x} ]]; then AGE["$xk"]=${T_AGE[$k]}; fi
+done
+
+# ---------- find expressions ----------
+declare -A BASENAMES
+for k in "${!MODE[@]}"; do BASENAMES["${k##*/}"]=1; done
+name_expr=(\( -false)
+for b in "${!BASENAMES[@]}"; do name_expr+=(-o -name "$b"); done
+name_expr+=(\))
+skip_expr=()
+if (( ${#SKIP[@]} )); then
+  skip_expr=(\( -false)
+  for s in "${SKIP[@]}"; do skip_expr+=(-o -name "$s"); done
+  skip_expr+=(\) -prune -o)
+fi
+
+# Most specific matching target wins: absolute > longer relative path > bare name.
+match_key() {
+  local p=$1 b=${1##*/} k best="" spec=-1 s
+  for k in "${!MODE[@]}"; do
+    if [[ $k == /* ]]; then
+      if [[ $p == "$k" ]]; then s=100000; else continue; fi
+    elif [[ $k == */* ]]; then
+      if [[ $p == */"$k" ]]; then s=${#k}; else continue; fi
+    else
+      if [[ $b == "$k" ]]; then s=0; else continue; fi
+    fi
+    if (( s > spec )); then spec=$s; best=$k; fi
+  done
+  printf '%s' "$best"
+}
+
+# ---------- phase 1: collect candidates + snapshot mtimes (age judged at scan time) ----------
+NOW=$(date +%s)
+PATHS=(); MTIMES=()
+for root in "${ROOTS[@]}"; do
+  if [[ $root == / || ! -d $root ]]; then echo "clean-sweep: skip root: $root" >&2; continue; fi
+  mapfile -d '' -t found < <(find "$root" -mindepth 1 -xdev \
+    "${skip_expr[@]}" "${name_expr[@]}" -type d -print0 2>/dev/null)
+  for p in "${found[@]}"; do
+    m=$(stat -c %Y -- "$p" 2>/dev/null) || continue
+    PATHS+=("$p"); MTIMES+=("$m")
+  done
+done
+
+# ---------- phase 2: delete, children before parents (reverse preorder) ----------
+removed=0
+for ((i=${#PATHS[@]}-1; i>=0; i--)); do
+  p=${PATHS[i]}; m=${MTIMES[i]}
+  if [[ ! -d $p || $p == / || $p == "$HOME" ]]; then continue; fi
+  k=$(match_key "$p")
+  if [[ -z "$k" ]]; then continue; fi
+  hours=${AGE[$k]:-$MIN_AGE_HOURS}
+  if (( NOW - m < hours * 3600 )); then continue; fi
+  if [[ ${MODE[$k]} == empty ]]; then
+    if [[ $DRY_RUN == true ]]; then
+      if [[ -z $(ls -A -- "$p" 2>/dev/null) ]]; then
+        echo "would remove (empty): $p"; removed=$((removed+1))
+      fi
+    elif rmdir -- "$p" 2>/dev/null; then
+      echo "removed (empty): $p"; removed=$((removed+1))
+    fi
+  else
+    if [[ $DRY_RUN == true ]]; then
+      echo "would FORCE-remove: $p"
+    else
+      rm -rf -- "$p"; echo "FORCE-removed: $p"
+    fi
+    removed=$((removed+1))
+  fi
+done
+if [[ $DRY_RUN == true ]]; then
+  echo "clean-sweep: $removed dir(s) would be removed (dry run)"
+else
+  echo "clean-sweep: $removed dir(s) removed"
+fi
