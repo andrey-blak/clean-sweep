@@ -132,6 +132,7 @@ for k in "${!T_AGE[@]}"; do
 done
 
 # ---------- expand tokens, canonicalize, build lookup tables ----------
+SCAN_ERRORS=0
 split_csv "$ROOTS_RAW"; ROOTS=("${SPLIT[@]}")
 split_csv "$SKIP_RAW";  SKIP=("${SPLIT[@]}")
 # Canonicalize roots (resolves symlinks and ..): find output is then canonical
@@ -141,7 +142,7 @@ CANON_ROOTS=()
 for r in "${ROOTS[@]}"; do
   r=$(expand "$r")
   if ! cr=$(realpath -e -- "$r" 2>/dev/null); then
-    echo "clean-sweep: root not accessible: $r" >&2; continue
+    echo "clean-sweep: root not accessible: $r" >&2; SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
   fi
   if [[ $cr == / ]]; then echo "clean-sweep: refusing root: /" >&2; continue; fi
   if [[ -z ${SEEN_ROOT[$cr]+x} ]]; then SEEN_ROOT["$cr"]=1; CANON_ROOTS+=("$cr"); fi
@@ -189,16 +190,31 @@ match_key() {
 # ---------- phase 1: collect candidates + snapshot mtime and identity ----------
 # Age is judged against scan-time mtimes; dev:ino snapshots let phase 2 detect
 # path replacement and protect / and $HOME by identity, not spelling.
+# find runs into temp files so its exit status and stderr are not lost:
+# a partial/inaccessible scan is reported and fails the run, not hidden.
+SWEEP_TMP=$(mktemp -d)
+trap 'rm -rf "$SWEEP_TMP"' EXIT
 NOW=$(date +%s)
 HOME_ID=$(stat -c '%d:%i' -- "$HOME" 2>/dev/null) || HOME_ID=""
 ROOT_ID=$(stat -c '%d:%i' / 2>/dev/null) || ROOT_ID=""
 PATHS=(); MTIMES=(); IDS=()
 for root in "${ROOTS[@]}"; do
-  if [[ ! -d $root ]]; then echo "clean-sweep: skip root: $root" >&2; continue; fi
-  mapfile -d '' -t found < <(find "$root" -mindepth 1 -xdev \
-    "${skip_expr[@]}" "${name_expr[@]}" -type d -print0 2>/dev/null)
+  if [[ ! -d $root ]]; then
+    echo "clean-sweep: skip root: $root" >&2; SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
+  fi
+  if ! find "$root" -mindepth 1 -xdev \
+      "${skip_expr[@]}" "${name_expr[@]}" -type d -print0 \
+      > "$SWEEP_TMP/find.out" 2> "$SWEEP_TMP/find.err"; then
+    echo "clean-sweep: scan incomplete for root: $root" >&2
+    sed 's/^/clean-sweep:   /' "$SWEEP_TMP/find.err" >&2
+    SCAN_ERRORS=$((SCAN_ERRORS+1))
+  fi
+  mapfile -d '' -t found < "$SWEEP_TMP/find.out"
   for p in "${found[@]}"; do
-    meta=$(stat -c '%Y %d %i' -- "$p" 2>/dev/null) || continue
+    if ! meta=$(stat -c '%Y %d %i' -- "$p" 2>/dev/null); then
+      echo "clean-sweep: stat failed (vanished?): $p" >&2
+      SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
+    fi
     read -r m dev ino <<< "$meta"
     PATHS+=("$p"); MTIMES+=("$m"); IDS+=("$dev:$ino")
   done
@@ -236,4 +252,8 @@ if [[ $DRY_RUN == true ]]; then
   echo "clean-sweep: $removed dir(s) would be removed (dry run)"
 else
   echo "clean-sweep: $removed dir(s) removed"
+fi
+if (( SCAN_ERRORS )); then
+  echo "clean-sweep: completed with $SCAN_ERRORS scan error(s)" >&2
+  exit 1
 fi
