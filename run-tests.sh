@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-S=/tmp/clean-sweep-build/clean-sweep
+S="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/clean-sweep"
 H=/tmp/sweep-home; X=/tmp/sweep-extra
 rm -rf "$H" "$X" /tmp/sweep-fallback
 bash -n "$S" || { echo 'SYNTAX FAIL'; exit 1; }
@@ -45,14 +45,15 @@ EOF
 fails=0
 gone()    { if [[ -e "$1" ]]; then echo "FAIL: should be gone: $1"; fails=$((fails+1)); fi; }
 exists()  { if [[ ! -e "$1" ]]; then echo "FAIL: should exist: $1"; fails=$((fails+1)); fi; }
+run()     { if ! bash "$S" "$@"; then echo "FAIL: sweep exited $? : $*"; fails=$((fails+1)); fi; }
 
 echo '=== T1: CLI -n dry run (config says false) ==='
-bash "$S" -c /tmp/sweep-test.ini -n
+run -c /tmp/sweep-test.ini -n
 exists "$H/projA/.claude/.cc-writes"   # nothing actually deleted
 exists "$H/.config/Claude/Code/.cc-writes/staged.tmp"
 
 echo '=== T2: real run ==='
-bash "$S" -c /tmp/sweep-test.ini
+run -c /tmp/sweep-test.ini
 gone   "$H/projA/.claude/.cc-writes"   # same-pass cascade: child + parent
 gone   "$H/projA/.claude"
 gone   "$H/.config/Claude/Code/.cc-writes"   # absolute force target
@@ -70,16 +71,16 @@ exists "$H/age30/.claude"                    # per-target 48h override (30h old)
 
 echo '=== T3: ${VAR:-default} expansion ==='
 printf '[scan]\nroots = ${SWEEP_TEST_ROOT:-/tmp/sweep-fallback}\n[targets]\n.hermes = empty\n' > /tmp/sweep-exp.ini
-SWEEP_TEST_ROOT=/tmp/sweep-fallback bash "$S" -c /tmp/sweep-exp.ini
+SWEEP_TEST_ROOT=/tmp/sweep-fallback run -c /tmp/sweep-exp.ini
 gone /tmp/sweep-fallback/.hermes
 mkdir -p /tmp/sweep-fallback/.hermes && touch -d '2 days ago' /tmp/sweep-fallback/.hermes
-bash "$S" -c /tmp/sweep-exp.ini      # var unset => fallback path
+run -c /tmp/sweep-exp.ini      # var unset => fallback path
 gone /tmp/sweep-fallback/.hermes
 
 echo '=== T4: config dry_run=true ==='
 mkdir -p "$H/t4/.hermes" && touch -d '2 days ago' "$H/t4/.hermes"
 sed 's/dry_run = false/dry_run = true/' /tmp/sweep-test.ini > /tmp/sweep-test-dry.ini
-bash "$S" -c /tmp/sweep-test-dry.ini
+run -c /tmp/sweep-test-dry.ini
 exists "$H/t4/.hermes"
 
 echo
