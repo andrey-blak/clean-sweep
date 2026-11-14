@@ -26,19 +26,44 @@ unquote() {
   if (( ${#s} >= 2 )) && [[ ${s:0:1} == '"' && ${s: -1} == '"' ]]; then s="${s:1:${#s}-2}"; fi
   printf '%s' "$s"
 }
-# Expand ${VAR:-default}, ${VAR}, $VAR via regex substitution — no eval.
+# Expand ${VAR:-default}, ${VAR}, $VAR and leading ~ / ~user.
+# Single pass, left to right: substituted values are inserted verbatim and
+# never re-scanned, so self-referential variables (A='${A}') cannot loop.
+# The :- default is expanded one bounded level (supports ${X:-$HOME/d}).
+# No eval. Unknown ~user is a fatal config error.
+expand_once() {
+  local rest=$1 out="" tok pre var val
+  while [[ $rest =~ \$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*) ]]; do
+    tok=${BASH_REMATCH[0]}
+    pre=${rest%%"$tok"*}
+    if [[ -n ${BASH_REMATCH[1]} ]]; then
+      var=${BASH_REMATCH[1]}
+      val=${!var-}
+      if [[ -z $val ]]; then val=$(expand_once "${BASH_REMATCH[3]-}"); fi
+    else
+      var=${BASH_REMATCH[4]}
+      val=${!var-}
+    fi
+    out+=$pre$val
+    rest=${rest#*"$tok"}
+  done
+  printf '%s' "$out$rest"
+}
 expand() {
-  local s=$1 tok var def val
-  while [[ "$s" =~ \$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\} ]]; do
-    tok=${BASH_REMATCH[0]}; var=${BASH_REMATCH[1]}; def=${BASH_REMATCH[3]-}
-    val=${!var-}; [[ -n "$val" ]] || val=$def
-    s=${s//"$tok"/"$val"}
-  done
-  while [[ "$s" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
-    tok=${BASH_REMATCH[0]}; var=${BASH_REMATCH[1]}
-    s=${s//"$tok"/"${!var-}"}
-  done
-  printf '%s' "$s"
+  local s=$1 home user
+  if [[ $s == '~'* ]]; then
+    user=${s%%/*}; user=${user#\~}
+    if [[ -z $user ]]; then
+      home=$HOME
+    else
+      home=$(getent passwd "$user" | cut -d: -f6) || home=""
+      if [[ -z $home ]]; then
+        echo "clean-sweep: unknown user '~$user' in: $s" >&2; return 1
+      fi
+    fi
+    s=$home${s#\~"$user"}
+  fi
+  expand_once "$s"
 }
 # Quote-aware comma split -> global SPLIT[]
 split_csv() {
