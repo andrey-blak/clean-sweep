@@ -122,12 +122,19 @@ fi
 if [[ ! $MIN_AGE_HOURS =~ ^[0-9]+$ ]]; then
   echo "clean-sweep: min_age_hours must be a whole number" >&2; exit 1
 fi
+# cap at 100 years; length check first so huge literals can't overflow (( ))
+if (( ${#MIN_AGE_HOURS} > 6 || MIN_AGE_HOURS > 876000 )); then
+  echo "clean-sweep: min_age_hours too large (max 876000)" >&2; exit 1
+fi
 if [[ $DRY_RUN != true && $DRY_RUN != false ]]; then
   echo "clean-sweep: dry_run must be true or false" >&2; exit 1
 fi
 for k in "${!T_AGE[@]}"; do
   if [[ ! ${T_AGE[$k]} =~ ^[0-9]+$ ]]; then
     echo "clean-sweep: bad age_hours for '$k': ${T_AGE[$k]}" >&2; exit 1
+  fi
+  if (( ${#T_AGE[$k]} > 6 || T_AGE[$k] > 876000 )); then
+    echo "clean-sweep: age_hours too large for '$k' (max 876000)" >&2; exit 1
   fi
 done
 
