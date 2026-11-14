@@ -131,14 +131,28 @@ for k in "${!T_AGE[@]}"; do
   fi
 done
 
-# ---------- expand tokens, build lookup tables ----------
+# ---------- expand tokens, canonicalize, build lookup tables ----------
 split_csv "$ROOTS_RAW"; ROOTS=("${SPLIT[@]}")
 split_csv "$SKIP_RAW";  SKIP=("${SPLIT[@]}")
-for i in "${!ROOTS[@]}"; do ROOTS[i]=$(expand "${ROOTS[i]}"); done
+# Canonicalize roots (resolves symlinks and ..): find output is then canonical
+# too, and symlinked roots work instead of being silently skipped.
+declare -A SEEN_ROOT
+CANON_ROOTS=()
+for r in "${ROOTS[@]}"; do
+  r=$(expand "$r")
+  if ! cr=$(realpath -e -- "$r" 2>/dev/null); then
+    echo "clean-sweep: root not accessible: $r" >&2; continue
+  fi
+  if [[ $cr == / ]]; then echo "clean-sweep: refusing root: /" >&2; continue; fi
+  if [[ -z ${SEEN_ROOT[$cr]+x} ]]; then SEEN_ROOT["$cr"]=1; CANON_ROOTS+=("$cr"); fi
+done
+ROOTS=("${CANON_ROOTS[@]}")
+if (( ${#ROOTS[@]} == 0 )); then echo "clean-sweep: no usable roots" >&2; exit 1; fi
 
 declare -A MODE AGE
 for k in "${!T_MODE[@]}"; do
   xk=$(expand "$k")
+  if [[ $xk == /* ]]; then xk=$(realpath -m -- "$xk"); fi
   MODE["$xk"]=${T_MODE[$k]}
   if [[ -n ${T_AGE[$k]+x} ]]; then AGE["$xk"]=${T_AGE[$k]}; fi
 done
@@ -172,24 +186,31 @@ match_key() {
   printf '%s' "$best"
 }
 
-# ---------- phase 1: collect candidates + snapshot mtimes (age judged at scan time) ----------
+# ---------- phase 1: collect candidates + snapshot mtime and identity ----------
+# Age is judged against scan-time mtimes; dev:ino snapshots let phase 2 detect
+# path replacement and protect / and $HOME by identity, not spelling.
 NOW=$(date +%s)
-PATHS=(); MTIMES=()
+HOME_ID=$(stat -c '%d:%i' -- "$HOME" 2>/dev/null) || HOME_ID=""
+ROOT_ID=$(stat -c '%d:%i' / 2>/dev/null) || ROOT_ID=""
+PATHS=(); MTIMES=(); IDS=()
 for root in "${ROOTS[@]}"; do
-  if [[ $root == / || ! -d $root ]]; then echo "clean-sweep: skip root: $root" >&2; continue; fi
+  if [[ ! -d $root ]]; then echo "clean-sweep: skip root: $root" >&2; continue; fi
   mapfile -d '' -t found < <(find "$root" -mindepth 1 -xdev \
     "${skip_expr[@]}" "${name_expr[@]}" -type d -print0 2>/dev/null)
   for p in "${found[@]}"; do
-    m=$(stat -c %Y -- "$p" 2>/dev/null) || continue
-    PATHS+=("$p"); MTIMES+=("$m")
+    meta=$(stat -c '%Y %d %i' -- "$p" 2>/dev/null) || continue
+    read -r m dev ino <<< "$meta"
+    PATHS+=("$p"); MTIMES+=("$m"); IDS+=("$dev:$ino")
   done
 done
 
 # ---------- phase 2: delete, children before parents (reverse preorder) ----------
 removed=0
 for ((i=${#PATHS[@]}-1; i>=0; i--)); do
-  p=${PATHS[i]}; m=${MTIMES[i]}
+  p=${PATHS[i]}; m=${MTIMES[i]}; id=${IDS[i]}
   if [[ ! -d $p || $p == / || $p == "$HOME" ]]; then continue; fi
+  if [[ -n $HOME_ID && $id == "$HOME_ID" ]]; then continue; fi
+  if [[ -n $ROOT_ID && $id == "$ROOT_ID" ]]; then continue; fi
   k=$(match_key "$p")
   if [[ -z "$k" ]]; then continue; fi
   hours=${AGE[$k]:-$MIN_AGE_HOURS}
