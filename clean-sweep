@@ -231,6 +231,14 @@ for ((i=${#PATHS[@]}-1; i>=0; i--)); do
   if [[ -z "$k" ]]; then continue; fi
   hours=${AGE[$k]:-$MIN_AGE_HOURS}
   if (( NOW - m < hours * 3600 )); then continue; fi
+  # Re-verify identity right before deleting (TOCTOU mitigation): if the
+  # path was replaced since the scan, leave the newcomer alone. rmdir is
+  # already atomic for empty mode; this also protects force mode.
+  if ! cur=$(stat -c '%d:%i' -- "$p" 2>/dev/null); then continue; fi
+  if [[ $cur != "$id" ]]; then
+    echo "clean-sweep: skipped (replaced since scan): $p" >&2
+    continue
+  fi
   if [[ ${MODE[$k]} == empty ]]; then
     if [[ $DRY_RUN == true ]]; then
       if [[ -z $(ls -A -- "$p" 2>/dev/null) ]]; then
