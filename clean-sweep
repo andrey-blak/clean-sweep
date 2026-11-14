@@ -221,7 +221,10 @@ for root in "${ROOTS[@]}"; do
 done
 
 # ---------- phase 2: delete, children before parents (reverse preorder) ----------
+# In dry-run, SIM tracks "virtually deleted" paths so cascading parents are
+# previewed exactly as a real run would remove them — without touching disk.
 removed=0
+declare -A SIM=()
 for ((i=${#PATHS[@]}-1; i>=0; i--)); do
   p=${PATHS[i]}; m=${MTIMES[i]}; id=${IDS[i]}
   if [[ ! -d $p || $p == / || $p == "$HOME" ]]; then continue; fi
@@ -241,7 +244,14 @@ for ((i=${#PATHS[@]}-1; i>=0; i--)); do
   fi
   if [[ ${MODE[$k]} == empty ]]; then
     if [[ $DRY_RUN == true ]]; then
-      if [[ -z $(ls -A -- "$p" 2>/dev/null) ]]; then
+      # virtually empty iff every actual entry is virtually deleted
+      mapfile -d '' -t entries < <(find "$p" -mindepth 1 -maxdepth 1 -printf '%f\0' 2>/dev/null)
+      virt_empty=1
+      for e in "${entries[@]}"; do
+        if [[ -z ${SIM[$p/$e]+x} ]]; then virt_empty=0; break; fi
+      done
+      if (( virt_empty )); then
+        SIM["$p"]=1
         echo "would remove (empty): $p"; removed=$((removed+1))
       fi
     elif rmdir -- "$p" 2>/dev/null; then
@@ -249,6 +259,7 @@ for ((i=${#PATHS[@]}-1; i>=0; i--)); do
     fi
   else
     if [[ $DRY_RUN == true ]]; then
+      SIM["$p"]=1
       echo "would FORCE-remove: $p"
     else
       rm -rf -- "$p"; echo "FORCE-removed: $p"
