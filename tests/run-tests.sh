@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-S="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/clean-sweep"
+S="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../clean-sweep"
 H=/tmp/sweep-home; X=/tmp/sweep-extra
 rm -rf "$H" "$X" /tmp/sweep-fallback
 bash -n "$S" || { echo 'SYNTAX FAIL'; exit 1; }
