@@ -29,7 +29,7 @@ mkdir -p "$H/fresh/.claude/.cc-writes"   # created after aging => fresh
 cat > /tmp/sweep-test.ini <<EOF
 [scan]
 roots = $H, "$X/proj,jects"
-skip = .git, node_modules
+exclude = .git, node_modules
 min_age_hours = 24
 dry_run = false
 
@@ -66,7 +66,7 @@ exists "$H/projB/.claude/settings.json"      # non-empty config dir survives
 exists "$H/.hermes/config.yaml"              # real-home analog survives
 gone   "$H/other/.cc-writes"           # bare .cc-writes=empty, empty+old => removed
 exists "$H/other2/.cc-writes/data"           # non-empty, bare empty-mode => survives
-exists "$H/projC/node_modules/.claude"       # skip list
+exists "$H/projC/node_modules/.claude"       # exclude list
 exists "$H/fresh/.claude/.cc-writes"         # age guard
 exists "$H/age30/.claude"                    # per-target 48h override (30h old)
 

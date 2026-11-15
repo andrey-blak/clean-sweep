@@ -27,8 +27,7 @@ unquote() {
   printf '%s' "$s"
 }
 # Expand ${VAR:-default}, ${VAR}, $VAR and leading ~ / ~user.
-# Single pass, left to right: substituted values are inserted verbatim and
-# never re-scanned, so self-referential variables (A='${A}') cannot loop.
+# Single pass, left to right: substituted values are inserted verbatim and never re-scanned, so self-referential variables (A='${A}') cannot loop.
 # The :- default is expanded one bounded level (supports ${X:-$HOME/d}).
 # No eval. Unknown ~user is a fatal config error.
 expand_once() {
@@ -85,7 +84,7 @@ split_csv() {
 }
 
 # ---------- parse INI (full-line # / ; comments only) ----------
-ROOTS_RAW=""; SKIP_RAW=""; MIN_AGE_HOURS=24; DRY_RUN=false
+ROOTS_RAW=""; EXCLUDE_RAW=""; MIN_AGE_HOURS=24; DRY_RUN=false
 declare -A T_MODE T_AGE
 section=""
 while IFS= read -r line || [[ -n "$line" ]]; do
@@ -99,7 +98,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     scan)
       case $key in
         roots)         ROOTS_RAW=$val ;;
-        skip)          SKIP_RAW=$val ;;
+        exclude)          EXCLUDE_RAW=$val ;;
         min_age_hours) MIN_AGE_HOURS=$val ;;
         dry_run)       DRY_RUN=$val ;;
       esac ;;
@@ -141,9 +140,8 @@ done
 # ---------- expand tokens, canonicalize, build lookup tables ----------
 SCAN_ERRORS=0
 split_csv "$ROOTS_RAW"; ROOTS=("${SPLIT[@]}")
-split_csv "$SKIP_RAW";  SKIP=("${SPLIT[@]}")
-# Canonicalize roots (resolves symlinks and ..): find output is then canonical
-# too, and symlinked roots work instead of being silently skipped.
+split_csv "$EXCLUDE_RAW";  EXCLUDE=("${SPLIT[@]}")
+# Canonicalize roots (resolves symlinks and ..): find output is then canonical too, and symlinked roots work instead of being silently skipped.
 declare -A SEEN_ROOT
 CANON_ROOTS=()
 for r in "${ROOTS[@]}"; do
@@ -171,11 +169,11 @@ for k in "${!MODE[@]}"; do BASENAMES["${k##*/}"]=1; done
 name_expr=(\( -false)
 for b in "${!BASENAMES[@]}"; do name_expr+=(-o -name "$b"); done
 name_expr+=(\))
-skip_expr=()
-if (( ${#SKIP[@]} )); then
-  skip_expr=(\( -false)
-  for s in "${SKIP[@]}"; do skip_expr+=(-o -name "$s"); done
-  skip_expr+=(\) -prune -o)
+exclude_expr=()
+if (( ${#EXCLUDE[@]} )); then
+  exclude_expr=(\( -false)
+  for s in "${EXCLUDE[@]}"; do exclude_expr+=(-o -name "$s"); done
+  exclude_expr+=(\) -prune -o)
 fi
 
 # Most specific matching target wins: absolute > longer relative path > bare name.
@@ -195,10 +193,7 @@ match_key() {
 }
 
 # ---------- phase 1: collect candidates + snapshot mtime and identity ----------
-# Age is judged against scan-time mtimes; dev:ino snapshots let phase 2 detect
-# path replacement and protect / and $HOME by identity, not spelling.
-# find runs into temp files so its exit status and stderr are not lost:
-# a partial/inaccessible scan is reported and fails the run, not hidden.
+# Age is judged against scan-time mtimes; dev:ino snapshots let phase 2 detect path replacement and protect / and $HOME by identity, not spelling. find runs into temp files so its exit status and stderr are not lost: a partial/inaccessible scan is reported and fails the run, not hidden.
 SWEEP_TMP=$(mktemp -d)
 trap 'rm -rf "$SWEEP_TMP"' EXIT
 NOW=$(date +%s)
@@ -207,10 +202,10 @@ ROOT_ID=$(stat -c '%d:%i' / 2>/dev/null) || ROOT_ID=""
 PATHS=(); MTIMES=(); IDS=()
 for root in "${ROOTS[@]}"; do
   if [[ ! -d $root ]]; then
-    echo "clean-sweep: skip root: $root" >&2; SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
+    echo "clean-sweep: exclude root: $root" >&2; SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
   fi
   if ! find "$root" -mindepth 1 -xdev \
-      "${skip_expr[@]}" "${name_expr[@]}" -type d -print0 \
+      "${exclude_expr[@]}" "${name_expr[@]}" -type d -print0 \
       > "$SWEEP_TMP/find.out" 2> "$SWEEP_TMP/find.err"; then
     echo "clean-sweep: scan incomplete for root: $root" >&2
     sed 's/^/clean-sweep:   /' "$SWEEP_TMP/find.err" >&2
@@ -228,8 +223,7 @@ for root in "${ROOTS[@]}"; do
 done
 
 # ---------- phase 2: delete, children before parents (reverse preorder) ----------
-# In dry-run, SIM tracks "virtually deleted" paths so cascading parents are
-# previewed exactly as a real run would remove them — without touching disk.
+# In dry-run, SIM tracks "virtually deleted" paths so cascading parents are previewed exactly as a real run would remove them — without touching disk.
 removed=0
 declare -A SIM=()
 for ((i=${#PATHS[@]}-1; i>=0; i--)); do
@@ -241,9 +235,7 @@ for ((i=${#PATHS[@]}-1; i>=0; i--)); do
   if [[ -z "$k" ]]; then continue; fi
   hours=${AGE[$k]:-$MIN_AGE_HOURS}
   if (( NOW - m < hours * 3600 )); then continue; fi
-  # Re-verify identity right before deleting (TOCTOU mitigation): if the
-  # path was replaced since the scan, leave the newcomer alone. rmdir is
-  # already atomic for empty mode; this also protects force mode.
+  # Re-verify identity right before deleting (TOCTOU mitigation): if the path was replaced since the scan, leave the newcomer alone. rmdir is already atomic for empty mode; this also protects force mode.
   if ! cur=$(stat -c '%d:%i' -- "$p" 2>/dev/null); then continue; fi
   if [[ $cur != "$id" ]]; then
     echo "clean-sweep: skipped (replaced since scan): $p" >&2

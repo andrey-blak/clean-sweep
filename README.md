@@ -75,7 +75,7 @@ Cron misses runs while the machine is off/asleep; no journal — check the log f
         roots (comma list, all scanned; quote entries containing commas;
         $HOME, ${VAR:-default}, ~ and ~user expanded; roots canonicalized,
         symlinked roots work, duplicates deduped, / refused),
-        skip (never descend), 
+        exclude (never descend), 
         min_age_hours (default 24, max 876000), 
         dry_run (default false; CLI -n/--dry-run wins)
 [targets]  
