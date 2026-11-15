@@ -22,11 +22,17 @@ done
 
 # ---------- helpers ----------
 trim() { local s=$1; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
+
 unquote() {
   local s=$1
-  if (( ${#s} >= 2 )) && [[ ${s:0:1} == '"' && ${s: -1} == '"' ]]; then s="${s:1:${#s}-2}"; fi
+  if (( ${#s} >= 2 )) &&
+     { [[ ${s:0:1} == '"' && ${s: -1} == '"' ]] ||
+       [[ ${s:0:1} == "'" && ${s: -1} == "'" ]]; }; then
+    s="${s:1:${#s}-2}"
+  fi
   printf '%s' "$s"
 }
+
 # Expand ${VAR:-default}, ${VAR}, $VAR and leading ~ / ~user.
 # Single pass, left to right: substituted values are inserted verbatim and never re-scanned, so self-referential variables (A='${A}') cannot loop.
 # The :- default is expanded one bounded level (supports ${X:-$HOME/d}).
@@ -49,6 +55,7 @@ expand_once() {
   done
   printf '%s' "$out$rest"
 }
+
 expand() {
   local s=$1 home user
   if [[ $s == '~'* ]]; then
@@ -65,6 +72,7 @@ expand() {
   fi
   expand_once "$s"
 }
+
 # Quote-aware comma split -> global SPLIT[]
 split_csv() {
   local s=$1 cur="" inq=0 i c e
