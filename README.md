@@ -12,7 +12,7 @@ Age guard defaults to 24h.
 mkdir -p ~/.local/bin ~/.config/clean-sweep ~/.config/systemd/user
 install -m 755 clean-sweep ~/.local/bin/clean-sweep
 install -m 644 config.ini ~/.config/clean-sweep/config.ini
-install -m 644 clean-sweep.service clean-sweep.timer ~/.config/systemd/user/
+install -m 644 install-systemd/clean-sweep.service install-systemd/clean-sweep.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 ~/.local/bin/clean-sweep -n                 # dry run first — review output
 systemctl --user enable --now clean-sweep.timer
