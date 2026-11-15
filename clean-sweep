@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 
-# clean-sweep — remove scratch dirs (e.g. .claude, .hermes, .cc-writes, ...)
+# Removes scratch dirs (e.g. .claude, .hermes, .cc-writes, ...)
 # Config: ~/.config/clean-sweep/config.ini (override: -c FILE or CLEAN_SWEEP_CONFIG)
 # Usage:  clean-sweep [-n|--dry-run] [-c|--config FILE]
 
 set -euo pipefail
 
-CONFIG="${CLEAN_SWEEP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/clean-sweep/config.ini}"
+NAME="clean-sweep"
+CONFIG="${CLEAN_SWEEP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/$NAME/config.ini}"
 CLI_DRY=0
 while (( $# )); do
   case "$1" in
     -n|--dry-run) CLI_DRY=1 ;;
     -c|--config)  CONFIG="${2:?--config needs a path}"; shift ;;
-    -h|--help)    echo "Usage: clean-sweep [-n|--dry-run] [-c|--config FILE]"; exit 0 ;;
-    *) echo "clean-sweep: unknown option: $1" >&2; exit 2 ;;
+    -h|--help)    echo "Usage: $NAME [-n|--dry-run] [-c|--config FILE]"; exit 0 ;;
+    *) echo "$NAME: unknown option: $1" >&2; exit 2 ;;
   esac
   shift
 done
-[[ -f "$CONFIG" ]] || { echo "clean-sweep: no config at $CONFIG" >&2; exit 1; }
+[[ -f "$CONFIG" ]] || { echo "$NAME: no config at $CONFIG" >&2; exit 1; }
 
 # ---------- helpers ----------
 trim() { local s=$1; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
@@ -57,7 +58,7 @@ expand() {
     else
       home=$(getent passwd "$user" | cut -d: -f6) || home=""
       if [[ -z $home ]]; then
-        echo "clean-sweep: unknown user '~$user' in: $s" >&2; return 1
+        echo "$NAME: unknown user '~$user' in: $s" >&2; return 1
       fi
     fi
     s=$home${s#\~"$user"}
@@ -107,7 +108,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       mode=$(trim "${val%%,*}")
       if [[ $val == *,* ]]; then age=$(trim "${val#*,}"); else age=""; fi
       if [[ $mode != empty && $mode != force ]]; then
-        echo "clean-sweep: bad mode for '$key': $mode" >&2; exit 1
+        echo "$NAME: bad mode for '$key': $mode" >&2; exit 1
       fi
       T_MODE["$key"]=$mode
       if [[ -n "$age" ]]; then T_AGE["$key"]=$age; fi ;;
@@ -116,24 +117,24 @@ done < "$CONFIG"
 
 if (( CLI_DRY )); then DRY_RUN=true; fi
 if [[ -z "$ROOTS_RAW" || ${#T_MODE[@]} -eq 0 ]]; then
-  echo "clean-sweep: config needs [scan] roots and [targets]" >&2; exit 1
+  echo "$NAME: config needs [scan] roots and [targets]" >&2; exit 1
 fi
 if [[ ! $MIN_AGE_HOURS =~ ^[0-9]+$ ]]; then
-  echo "clean-sweep: min_age_hours must be a whole number" >&2; exit 1
+  echo "$NAME: min_age_hours must be a whole number" >&2; exit 1
 fi
 # cap at 100 years; length check first so huge literals can't overflow (( ))
 if (( ${#MIN_AGE_HOURS} > 6 || MIN_AGE_HOURS > 876000 )); then
-  echo "clean-sweep: min_age_hours too large (max 876000)" >&2; exit 1
+  echo "$NAME: min_age_hours too large (max 876000)" >&2; exit 1
 fi
 if [[ $DRY_RUN != true && $DRY_RUN != false ]]; then
-  echo "clean-sweep: dry_run must be true or false" >&2; exit 1
+  echo "$NAME: dry_run must be true or false" >&2; exit 1
 fi
 for k in "${!T_AGE[@]}"; do
   if [[ ! ${T_AGE[$k]} =~ ^[0-9]+$ ]]; then
-    echo "clean-sweep: bad age_hours for '$k': ${T_AGE[$k]}" >&2; exit 1
+    echo "$NAME: bad age_hours for '$k': ${T_AGE[$k]}" >&2; exit 1
   fi
   if (( ${#T_AGE[$k]} > 6 || T_AGE[$k] > 876000 )); then
-    echo "clean-sweep: age_hours too large for '$k' (max 876000)" >&2; exit 1
+    echo "$NAME: age_hours too large for '$k' (max 876000)" >&2; exit 1
   fi
 done
 
@@ -147,13 +148,13 @@ CANON_ROOTS=()
 for r in "${ROOTS[@]}"; do
   r=$(expand "$r")
   if ! cr=$(realpath -e -- "$r" 2>/dev/null); then
-    echo "clean-sweep: root not accessible: $r" >&2; SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
+    echo "$NAME: root not accessible: $r" >&2; SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
   fi
-  if [[ $cr == / ]]; then echo "clean-sweep: refusing root: /" >&2; continue; fi
+  if [[ $cr == / ]]; then echo "$NAME: refusing root: /" >&2; continue; fi
   if [[ -z ${SEEN_ROOT[$cr]+x} ]]; then SEEN_ROOT["$cr"]=1; CANON_ROOTS+=("$cr"); fi
 done
 ROOTS=("${CANON_ROOTS[@]}")
-if (( ${#ROOTS[@]} == 0 )); then echo "clean-sweep: no usable roots" >&2; exit 1; fi
+if (( ${#ROOTS[@]} == 0 )); then echo "$NAME: no usable roots" >&2; exit 1; fi
 
 declare -A MODE AGE
 for k in "${!T_MODE[@]}"; do
@@ -202,19 +203,19 @@ ROOT_ID=$(stat -c '%d:%i' / 2>/dev/null) || ROOT_ID=""
 PATHS=(); MTIMES=(); IDS=()
 for root in "${ROOTS[@]}"; do
   if [[ ! -d $root ]]; then
-    echo "clean-sweep: exclude root: $root" >&2; SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
+    echo "$NAME: exclude root: $root" >&2; SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
   fi
   if ! find "$root" -mindepth 1 -xdev \
       "${exclude_expr[@]}" "${name_expr[@]}" -type d -print0 \
       > "$SWEEP_TMP/find.out" 2> "$SWEEP_TMP/find.err"; then
-    echo "clean-sweep: scan incomplete for root: $root" >&2
-    sed 's/^/clean-sweep:   /' "$SWEEP_TMP/find.err" >&2
+    echo "$NAME: scan incomplete for root: $root" >&2
+    sed "s/^/$NAME:   /" "$SWEEP_TMP/find.err" >&2
     SCAN_ERRORS=$((SCAN_ERRORS+1))
   fi
   mapfile -d '' -t found < "$SWEEP_TMP/find.out"
   for p in "${found[@]}"; do
     if ! meta=$(stat -c '%Y %d %i' -- "$p" 2>/dev/null); then
-      echo "clean-sweep: stat failed (vanished?): $p" >&2
+      echo "$NAME: stat failed (vanished?): $p" >&2
       SCAN_ERRORS=$((SCAN_ERRORS+1)); continue
     fi
     read -r m dev ino <<< "$meta"
@@ -238,7 +239,7 @@ for ((i=${#PATHS[@]}-1; i>=0; i--)); do
   # Re-verify identity right before deleting (TOCTOU mitigation): if the path was replaced since the scan, leave the newcomer alone. rmdir is already atomic for empty mode; this also protects force mode.
   if ! cur=$(stat -c '%d:%i' -- "$p" 2>/dev/null); then continue; fi
   if [[ $cur != "$id" ]]; then
-    echo "clean-sweep: skipped (replaced since scan): $p" >&2
+    echo "$NAME: skipped (replaced since scan): $p" >&2
     continue
   fi
   if [[ ${MODE[$k]} == empty ]]; then
@@ -267,11 +268,11 @@ for ((i=${#PATHS[@]}-1; i>=0; i--)); do
   fi
 done
 if [[ $DRY_RUN == true ]]; then
-  echo "clean-sweep: $removed dir(s) would be removed (dry run)"
+  echo "$NAME: $removed dir(s) would be removed (dry run)"
 else
-  echo "clean-sweep: $removed dir(s) removed"
+  echo "$NAME: $removed dir(s) removed"
 fi
 if (( SCAN_ERRORS )); then
-  echo "clean-sweep: completed with $SCAN_ERRORS scan error(s)" >&2
+  echo "$NAME: completed with $SCAN_ERRORS scan error(s)" >&2
   exit 1
 fi
