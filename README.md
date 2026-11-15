@@ -8,23 +8,36 @@ Age guard defaults to 24h.
 ### systemd user timer
 
 (preferred)
+Copy script and config:
 ```bash
 mkdir -p ~/.local/bin ~/.config/clean-sweep ~/.config/systemd/user
 install -m 755 clean-sweep ~/.local/bin/clean-sweep
 install -m 644 config.ini ~/.config/clean-sweep/config.ini
+```
+
+dry run first — review output:
+```bash
+~/.local/bin/clean-sweep -n
+```
+
+Install:
+```bash
 install -m 644 install-systemd/clean-sweep.service install-systemd/clean-sweep.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-~/.local/bin/clean-sweep -n                 # dry run first — review output
 systemctl --user enable --now clean-sweep.timer
 systemctl --user list-timers | grep clean-sweep
-journalctl --user -u clean-sweep -n 50      # what it deleted
+```
+
+Check what it deleted:
+```bash
+journalctl --user -u clean-sweep -n 50
 ```
 
 Persistent=true catches up after sleep/shutdown. Runs while logged in; for logged-out operation: loginctl enable-linger $USER. 
 
 Installation files:
 ```
-clean-sweep            -> ~/.local/bin/clean-sweep          (chmod 755)
+clean-sweep            -> ~/.local/bin/clean-sweep
 config.ini             -> ~/.config/clean-sweep/config.ini
 clean-sweep.service    -> ~/.config/systemd/user/
 clean-sweep.timer      -> ~/.config/systemd/user/
